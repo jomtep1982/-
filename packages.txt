@@ -4,3 +4,6 @@ tesseract-ocr-osd
 poppler-utils
 tesseract-ocr
 tesseract-ocr-tha
+poppler-utils
+tesseract-ocr
+tesseract-ocr-tha
