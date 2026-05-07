@@ -6,3 +6,8 @@ pytesseract
 Pillow
 opencv-python-headless
 numpy
+pdf2image
+opencv-python-headless
+numpy
+pytesseract
+Pillow
