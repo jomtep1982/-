@@ -6,92 +6,214 @@ import cv2
 from io import BytesIO
 from PIL import Image, ImageEnhance
 import pytesseract
-from pdf2image import convert_from_bytes
+import fitz  # PyMuPDF
 
-st.set_page_config(page_title="โปรแกรมประมวลผลแปลน PEA", page_icon="💜", layout="centered")
+# --- ตั้งค่าที่อยู่ Tesseract สำหรับ Windows ---
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
 
-# --- 1. ฟังก์ชันกรองสีฟ้า (ทำงานได้เพอร์เฟกต์แล้ว!) ---
-def process_blue_filter_advanced(pil_img):
+st.set_page_config(page_title="PEA ผบส. Digital Estimator", layout="wide")
+
+# --- 🎨 1. ชุดคำสั่ง CSS ตกแต่งหน้าตา Modern Pro ---
+st.markdown("""
+    <style>
+    @import url('https://fonts.googleapis.com/css2?family=Prompt:wght@300;400;600&display=swap');
+
+    html, body, [class*="css"] {
+        font-family: 'Prompt', sans-serif;
+        background-color: #0e1117; 
+        color: #ffffff;
+    }
+
+    .main-header {
+        background: linear-gradient(90deg, #622181, #9d308d, #622181);
+        background-size: 200% auto;
+        padding: 40px;
+        border-radius: 25px;
+        text-align: center;
+        margin-bottom: 40px;
+        box-shadow: 0 10px 30px rgba(157, 48, 141, 0.4);
+    }
+    .main-header h1 {
+        font-size: 42px !important;
+        font-weight: 600;
+        color: white !important;
+        margin: 0;
+    }
+
+    .input-card {
+        background: rgba(255, 255, 255, 0.05);
+        padding: 30px;
+        border-radius: 20px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        margin-bottom: 25px;
+    }
+
+    div.stButton > button:first-child {
+        background: linear-gradient(135deg, #9d308d 0%, #622181 100%);
+        color: white;
+        height: 70px;
+        width: 100%;
+        border-radius: 15px;
+        font-size: 26px !important;
+        font-weight: 600;
+        border: none;
+        transition: all 0.3s ease;
+        margin-top: 20px;
+    }
+    div.stButton > button:first-child:hover {
+        transform: translateY(-3px);
+        box-shadow: 0 8px 25px rgba(157, 48, 141, 0.5);
+    }
+
+    .modern-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin: 25px 0;
+        font-size: 20px;
+        border-radius: 15px;
+        overflow: hidden;
+        background-color: white;
+    }
+    .modern-table th {
+        background-color: #622181;
+        color: white;
+        padding: 20px;
+        text-align: center;
+        font-size: 24px;
+    }
+    .modern-table td {
+        padding: 18px;
+        text-align: center;
+        color: #1f2937;
+        border-bottom: 1px solid #e5e7eb;
+    }
+    .modern-table tr:nth-child(even) { background-color: #f9fafb; }
+    .modern-table tr:hover { background-color: #f3e8f9; }
+
+    .stTabs [data-baseweb="tab-list"] { gap: 15px; }
+    .stTabs [data-baseweb="tab"] {
+        height: 60px;
+        background-color: rgba(255,255,255,0.05);
+        border-radius: 12px 12px 0 0;
+        padding: 10px 30px;
+        font-size: 20px !important;
+        color: #9ca3af;
+    }
+    .stTabs [aria-selected="true"] {
+        background-color: #9d308d !important;
+        color: white !important;
+        font-weight: bold;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# --- 2. ฟังก์ชันประมวลผล ---
+def process_image(pil_img):
     enhancer = ImageEnhance.Contrast(pil_img)
-    pil_img = enhancer.enhance(2.0)
-    
+    pil_img = enhancer.enhance(3.0) 
     img_cv = cv2.cvtColor(np.array(pil_img.convert('RGB')), cv2.COLOR_RGB2BGR)
     hsv = cv2.cvtColor(img_cv, cv2.COLOR_BGR2HSV)
-    
-    lower_blue = np.array([85, 30, 30]) 
-    upper_blue = np.array([145, 255, 255])
-    
-    mask = cv2.inRange(hsv, lower_blue, upper_blue)
-    
+    mask = cv2.inRange(hsv, np.array([80, 25, 25]), np.array([150, 255, 255]))
     kernel = np.ones((2,2), np.uint8)
     mask = cv2.dilate(mask, kernel, iterations=1)
-    
     return Image.fromarray(cv2.bitwise_not(mask))
 
-# --- 2. ฟังก์ชันซ่อมและทำความสะอาดรหัส ---
-def clean_pea_code(text):
-    code = re.sub(r'[^A-Z0-9\-\.]', '', text) # อนุญาตแค่อักษร เลข ขีด จุด
-    code = re.sub(r'\d{6,}', '', code) # ตัดเลขพิกัดเสายาวๆ ทิ้ง
-    return code.strip('-').strip('.')
-
-# --- 3. หน้าจอ UI ---
-st.markdown("""<div style="background: linear-gradient(135deg, #622181, #9d308d); color: white; padding: 25px; text-align: center; border-radius: 20px 20px 0 0; margin: 0 -2rem 2rem -2rem;"><h2 style="margin: 0; color: white; font-size: 22px;">💜 โปรแกรมประมวลผลแปลน (V.บีบอัดข้อความ)</h2></div>""", unsafe_allow_html=True)
-
-uploaded_file = st.file_uploader("อัปโหลดแปลน PDF หรือรูปภาพ", type=["pdf", "png", "jpg", "jpeg"])
-suffix = st.text_input("รหัสต่อท้ายที่ต้องการนับ (เช่น (IN)):", value="(IN)")
-show_debug = st.checkbox("🔍 ตรวจสอบภาพที่ AI มองเห็น")
-
-if st.button("🚀 เริ่มประมวลผลแบบละเอียด"):
-    if uploaded_file:
-        with st.spinner('กำลังใช้ AI สกัดรหัสและเชื่อมต่อข้อความเข้าด้วยกัน...'):
-            if uploaded_file.type == "application/pdf":
-                pages = convert_from_bytes(uploaded_file.read(), dpi=300)
-            else:
-                pages = [Image.open(uploaded_file)]
+def extract_codes(page_img, target_suffix):
+    s_clean = target_suffix.replace('(', '').replace(')', '').strip().upper()
+    
+    # อ่านข้อความออกมาทั้งหมดก่อน
+    raw_text = pytesseract.image_to_string(page_img, lang='eng+tha', config='--psm 11')
+    
+    # 🚀 กฎข้อที่ 1 (Auto-Correct): แปลงอักขระขยะที่ AI มักมองผิดให้เป็นเลข 8 ทันที
+    raw_text = raw_text.replace('@', '8').replace('&', '8')
+    
+    found = []
+    
+    for line in raw_text.split('\n'):
+        # ค้นหาข้อความที่มีตัวอักษร, ตัวเลข, ขีด, จุด หรือ "ช่องว่าง" นำหน้าวงเล็บ (IN)
+        pattern = r"([A-Za-z0-9\-\.\s]+)\(" + re.escape(s_clean) + r"\)"
+        
+        for m in re.finditer(pattern, line, re.IGNORECASE):
+            code_raw = m.group(1)
             
-            all_results = {}
-            for i, page in enumerate(pages):
-                processed_img = process_blue_filter_advanced(page)
+            # 🚀 กฎข้อที่ 2 (Space Compaction): ลบช่องว่างทิ้งทั้งหมด เพื่อเชื่อมข้อความเอียงๆ ให้ติดกัน (เช่น 2 x GY 22 -> 2xGY22)
+            code = re.sub(r'\s+', '', code_raw)
+            
+            # กรองให้เหลือแต่ตัวอักษรและตัวเลขที่ถูกต้องเท่านั้น (เผื่อมีขยะอื่นหลุดมา)
+            code = re.sub(r'[^a-zA-Z0-9\-\.]', '', code)
+            
+            # ตัดเลขพิกัดเสา (7 หลักขึ้นไป) ออก
+            code = re.sub(r'\d{7,}', '', code)
+            
+            # ซ่อมแซมรหัสที่ AI ชอบอ่านเบิ้ล
+            code = re.sub(r'^88-', '8-', code.upper())
+            code = code.strip('-').strip('.')
+            
+            if len(code) >= 1: 
+                found.append(f"{code}({s_clean})")
                 
-                if show_debug:
-                    st.image(processed_img, caption=f"หน้า {i+1}: ภาพชัดเจน! AI กำลังอ่านและบีบอัดข้อความ")
-                
-                # 1. ให้ AI อ่านข้อความทั้งหมดออกมาก่อน
-                raw_text = pytesseract.image_to_string(processed_img, lang='eng', config='--psm 11')
-                
-                # 🚀 2. ไม้ตาย: ลบช่องว่างและขึ้นบรรทัดใหม่ "ทั้งหมด" ออกไป!
-                # (1 2 - R 4 ( I N ) จะถูกเชื่อมกลายเป็น 12-R4(IN) ทันที)
-                compact_text = re.sub(r'\s+', '', raw_text).upper()
-                
-                # แก้ไขกรณี AI มองวงเล็บเอียงๆ เป็นปีกกา
-                compact_text = re.sub(r'[\[\{]', '(', compact_text)
-                compact_text = re.sub(r'[\]\}]', ')', compact_text)
-                
-                # 3. เตรียมคำที่ต้องการค้นหา
-                s_clean = suffix.replace('(', '').replace(')', '').strip().upper()
-                
-                # 4. ค้นหาข้อมูล (หาตัวอักษร 2-25 ตัวที่อยู่ติดกับ (IN))
-                regex_str = r"([A-Z0-9\-\.]{2,25})\(" + re.escape(s_clean) + r"\)"
-                matches = re.finditer(regex_str, compact_text)
-                
-                for m in matches:
-                    code = clean_pea_code(m.group(1))
-                    code = re.sub(r'^88-', '8-', code) # ซ่อม 88- เป็น 8-
-                    
-                    if len(code) >= 2 and re.search(r'[A-Z0-9]', code):
-                        final = f"{code}({s_clean})"
-                        all_results[final] = all_results.get(final, 0) + 1
+    return found
 
-            if all_results:
-                st.success(f"✅ ตรวจพบรหัสสีฟ้า {sum(all_results.values())} ชุด")
-                df = pd.DataFrame(all_results.items(), columns=['รหัสอุปกรณ์', 'จำนวน'])
-                st.table(df)
+# --- 3. ส่วนหน้าจอโปรแกรม ---
+st.markdown('<div class="main-header"><h1>โปรแกรมประมาณการระบบจำหน่าย ผบส. กฟจ.ศก</h1></div>', unsafe_allow_html=True)
+
+st.markdown('<div class="input-card">', unsafe_allow_html=True)
+col_cfg1, col_cfg2 = st.columns(2)
+with col_cfg1:
+    suffix_val = st.text_input("🔍 ข้อความต่อท้ายที่ค้นหา", value="(IN)")
+with col_cfg2:
+    mode_val = st.selectbox("🎨 โหมดการอ่านสี", ["สีฟ้าเท่านั้น", "อ่านทุกสี (ALL)"])
+st.markdown('</div>', unsafe_allow_html=True)
+
+st.markdown('<h3>📂 เลือกไฟล์แปลนระบบ (แผ่นที่ 1, 2, 3...)</h3>', unsafe_allow_html=True)
+if 'file_count' not in st.session_state: st.session_state.file_count = 1
+uploaded_dict = {}
+
+for i in range(st.session_state.file_count):
+    st.markdown(f"**แผ่นที่ {i+1}**")
+    uploaded_dict[i] = st.file_uploader(f"upload_{i}", type=["pdf", "png", "jpg"], label_visibility="collapsed")
+
+if st.button("+ เพิ่มช่องอัปโหลดแผ่นถัดไป"):
+    st.session_state.file_count += 1
+    st.rerun()
+
+if st.button("🚀 เริ่มคำนวณและสรุปผลทุกแผ่น"):
+    all_final_data = [] 
+    with st.spinner('ผบส. Digital AI กำลังวิเคราะห์แปลนและเชื่อมข้อความ...'):
+        for i in range(st.session_state.file_count):
+            f = uploaded_dict.get(i)
+            if f:
+                if f.type == "application/pdf":
+                    doc = fitz.open(stream=f.read(), filetype="pdf")
+                    imgs = [Image.frombytes("RGB", [p.get_pixmap(dpi=300).width, p.get_pixmap(dpi=300).height], p.get_pixmap(dpi=300).samples) for p in doc]
+                else:
+                    imgs = [Image.open(f)]
                 
-                output = BytesIO()
-                with pd.ExcelWriter(output, engine='openpyxl') as writer:
-                    df.to_excel(writer, index=False)
-                st.download_button("📥 โหลด Excel", data=output.getvalue(), file_name="pea_summary.xlsx")
-            else:
-                st.error("🔍 ยังไม่พบรหัส! ลองตรวจสอบความคมชัดอีกครั้งครับ")
-    else:
-        st.error("❌ กรุณาเลือกไฟล์ก่อนครับ")
+                codes_in_file = []
+                for img in imgs:
+                    processed_img = process_image(img) if mode_val == "สีฟ้าเท่านั้น" else img
+                    codes_in_file.extend(extract_codes(processed_img, suffix_val))
+                
+                if codes_in_file:
+                    df = pd.DataFrame(codes_in_file, columns=['รหัสอุปกรณ์']).value_counts().reset_index()
+                    df.columns = ['รหัสอุปกรณ์', 'จำนวน']
+                    all_final_data.append((f"แผ่นที่ {i+1}", df))
+
+    if all_final_data:
+        st.markdown("<br><h2 style='text-align:center; color:#9d308d;'>📊 ผลการประมาณการแยกตามแผ่น (ผบส. กฟจ.ศก)</h2>", unsafe_allow_html=True)
+        tab_names = [name for name, _ in all_final_data]
+        tabs = st.tabs(tab_names)
+        
+        for idx, (name, df) in enumerate(all_final_data):
+            with tabs[idx]:
+                html = '<table class="modern-table"><thead><tr><th>รหัสอุปกรณ์</th><th>จำนวน (ชุด)</th></tr></thead><tbody>'
+                for _, row in df.iterrows():
+                    html += f'<tr><td>{row["รหัสอุปกรณ์"]}</td><td>{row["จำนวน"]}</td></tr>'
+                html += '</tbody></table>'
+                st.markdown(html, unsafe_allow_html=True)
+
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            for name, df in all_final_data:
+                df.to_excel(writer, sheet_name=name, index=False)
+        st.download_button("📥 ดาวน์โหลดรายงานสรุป ผบส. (Excel)", data=output.getvalue(), file_name="ผบส_Summary_Pro.xlsx", use_container_width=True)
