@@ -2,7 +2,7 @@ streamlit
 pandas
 numpy
 opencv-python-headless
-pytesseract
 Pillow
+pytesseract
 pymupdf
 openpyxl
